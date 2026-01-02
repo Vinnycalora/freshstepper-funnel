@@ -6,6 +6,7 @@ export type FunnelCustomer = {
     phone?: string;
     postcode?: string;
     address?: string;
+    city?: string;  
     preferredDateTime?: string;
 };
 
