@@ -45,7 +45,7 @@ export default function ThankYouPage({
             <div className="mt-4 space-y-4">
               <div>
                 <div className="text-sm font-semibold uppercase text-black/60">Shoe type</div>
-                <div className="mt-1 font-bold">{shoeTypeLabel(order.shoeType ?? "")}</div>
+                <div className="mt-1 font-bold">{shoeTypeLabel(order.shoeType)}</div>
               </div>
 
               <div>
