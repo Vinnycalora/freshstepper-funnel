@@ -1,5 +1,7 @@
 import { listOrders } from "@/lib/orders";
 import { SERVICE_LABELS, UPSELL_LABELS, shoeTypeLabel } from "@/components/labels";
+import type { ShoeType } from "@/components/funnelStore";
+
 
 export default function ThankYouPage({
   searchParams,
@@ -18,6 +20,12 @@ export default function ThankYouPage({
 
   const servicesPretty = services.map((id) => SERVICE_LABELS[id] ?? id);
   const upgradesPretty = upgrades.map((id) => UPSELL_LABELS[id] ?? id);
+
+    const shoeType: ShoeType | undefined =
+        order?.shoeType === "trainers" || order?.shoeType === "heels" || order?.shoeType === "other"
+            ? (order.shoeType as ShoeType)
+            : undefined;
+
   
 
 
@@ -45,7 +53,7 @@ export default function ThankYouPage({
             <div className="mt-4 space-y-4">
               <div>
                 <div className="text-sm font-semibold uppercase text-black/60">Shoe type</div>
-                <div className="mt-1 font-bold">{shoeTypeLabel(order.shoeType)}</div>
+                <div className="mt-1 font-bold">{shoeTypeLabel(shoeType)}</div>
               </div>
 
               <div>
