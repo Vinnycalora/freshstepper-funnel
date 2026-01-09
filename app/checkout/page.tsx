@@ -253,7 +253,7 @@ export default function CheckoutPage() {
                                         label="Full name"
                                         value={form.fullName}
                                         onChange={(v) => saveToStore({ fullName: v })}
-                                        placeholder="Ollie Pratt"
+                                        placeholder="John Doe"
                                     />
                                     {touched && errors.fullName && (
                                         <div className="mt-2 text-xs text-red-600">
@@ -296,7 +296,7 @@ export default function CheckoutPage() {
                                         label="Postcode"
                                         value={form.postcode}
                                         onChange={(v) => saveToStore({ postcode: v })}
-                                        placeholder="TS18..."
+                                        placeholder="NE13 ..."
                                     />
                                     {touched && errors.postcode && (
                                         <div className="mt-2 text-xs text-red-600">
@@ -324,7 +324,7 @@ export default function CheckoutPage() {
                                         label="City"
                                         value={form.city}
                                         onChange={(v) => saveToStore({ city: v })}
-                                        placeholder="e.g. Stockton-on-Tees"
+                                        placeholder="e.g. Newcastle"
                                     />
                                     {touched && errors.city && (
                                         <div className="mt-2 text-xs text-red-600">
