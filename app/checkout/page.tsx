@@ -70,14 +70,18 @@ export default function CheckoutPage() {
     // Redirect only after we have loaded the funnel state
     useEffect(() => {
         if (!s) return;
+
         const shoeType = s.shoeType;
-        const services = s.services ?? [];
+
+        // shoeType is required
         if (!shoeType) {
             router.replace("/quote/type");
-        } else if (!services.length) {
-            router.replace("/quote/services");
+            return;
         }
+
+        // ✅ Services (needs add-ons) are optional now, so do NOT redirect
     }, [s, router]);
+
 
     // Form state initialised empty; will be prefixed from funnel state once after load
     const [form, setForm] = useState<FormState>(() => ({
@@ -171,7 +175,8 @@ export default function CheckoutPage() {
                 city: form.city,
                 postcode: form.postcode,
 
-                preferredTime: form.preferredDateTime,
+                preferredDateTime: form.preferredDateTime,
+
             };
 
             console.log("Create session payload:", payload);

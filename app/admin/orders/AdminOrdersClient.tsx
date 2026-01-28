@@ -1,6 +1,8 @@
 "use client";
 
 import * as React from "react";
+import { SERVICE_LABELS, UPSELL_LABELS, shoeTypeLabel } from "@/components/labels";
+
 
 function toText(v: unknown): string {
     if (v == null) return "";
@@ -271,6 +273,124 @@ export default function AdminOrdersClient({ initialOrders }: Props) {
         [ordersState]
     );
 
+    // CSV export helpers
+    function csvEscapeCell(v: string) {
+        // Standard CSV escaping: quote if contains comma/newline/quote; double quotes inside
+        if (v == null) return "";
+        const s = String(v);
+        if (s.includes('"')) return `"${s.replace(/"/g, '""')}"`;
+        if (s.includes(",") || s.includes("\n") || s.includes("\r")) return `"${s}"`;
+        return s;
+    }
+
+    function downloadCsv(filename: string, csvText: string) {
+        const blob = new Blob([`\uFEFF${csvText}`], { type: "text/csv;charset=utf-8;" }); // BOM helps Excel
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+    }
+
+    function exportOrdersCsv(exportAll = true) {
+        const source = exportAll ? ordersState ?? [] : orders ?? [];
+
+        if (!source || source.length === 0) {
+            alert("No orders to export.");
+            return;
+        }
+
+        // Fixed set of useful columns + raw JSON for anything else
+        const headers = [
+            "id",
+            "shortRef",
+            "createdAt",
+            "customerEmail",
+            "email",
+            "name",
+            "phone",
+            "paymentMode",
+            "paymentStatus",
+            "status",
+            "mode",
+            "shoeType",
+            "services",
+            "upgrades",
+            "delivery",
+            "amountTotal_minor",
+            "currency",
+            "checkoutUrl",
+            "abandonedStage",
+            "abandonedFirstAt",
+            "abandonedLastAt",
+            "stripeCustomerId",
+            "stripeSubscriptionId",
+            "shippingLabelId",
+            "trackingNumber",
+            "trackingUrl",
+            "sendcloudStatus",
+            "sendcloudStatusUpdatedAt",
+            "sendcloudStatusHistory",
+            "rawJson",
+        ];
+
+        const rows = source.map((o: any) => {
+            const services = toStringArray(o?.services ?? o?.items?.services).join(", ");
+            const upgrades = toStringArray(o?.upgrades ?? o?.items?.upgrades).join(", ");
+
+            const amountTotal =
+                typeof o?.amountTotal === "number"
+                    ? o.amountTotal
+                    : typeof o?.amount_total === "number"
+                        ? o.amount_total
+                        : "";
+
+            const tracking = pickTracking(o);
+
+            const row: Record<string, string> = {
+                id: toText(o?.id),
+                shortRef: toText(o?.shortRef),
+                createdAt: toText(o?.createdAt),
+                customerEmail: toText(o?.customerEmail),
+                email: toText(o?.email),
+                name: toText(o?.name) || pickName(o),
+                phone: toText(o?.phone) || pickPhone(o),
+                paymentMode: toText(o?.paymentMode) || pickMode(o),
+                paymentStatus: toText(o?.paymentStatus) || toText(o?.status),
+                status: pickStatus(o),
+                mode: toText(o?.mode),
+                shoeType: toText(o?.shoeType) || toText(o?.items?.shoeType),
+                services,
+                upgrades,
+                delivery: pickDelivery(o),
+                amountTotal_minor: amountTotal === "" ? "" : String(amountTotal),
+                currency: toText(o?.currency || o?.currencyCode),
+                checkoutUrl: pickCheckoutUrl(o),
+                abandonedStage: String(pickAbandonedStage(o)),
+                abandonedFirstAt: pickAbandonedFirstAt(o),
+                abandonedLastAt: pickAbandonedLastAt(o),
+                stripeCustomerId: toText(o?.stripeCustomerId),
+                stripeSubscriptionId: toText(o?.stripeSubscriptionId),
+                shippingLabelId: String(pickParcelId(o) ?? ""),
+                trackingNumber: tracking.number || "",
+                trackingUrl: tracking.url || "",
+                sendcloudStatus: pickSendcloudStatus(o),
+                sendcloudStatusUpdatedAt: pickSendcloudUpdatedAt(o),
+                sendcloudStatusHistory: JSON.stringify(pickSendcloudHistory(o)),
+                rawJson: JSON.stringify(o),
+            };
+
+            return headers.map((h) => csvEscapeCell(row[h] ?? "")).join(",");
+        });
+
+        const csv = `${headers.map(csvEscapeCell).join(",")}\n${rows.join("\n")}`;
+        const filename = `orders-export-${new Date().toISOString().replace(/[:.]/g, "-")}.csv`;
+        downloadCsv(filename, csv);
+    }
+
     return (
         <div>
             {/* Controls */}
@@ -333,6 +453,25 @@ export default function AdminOrdersClient({ initialOrders }: Props) {
                             <option value="2">Stage 2</option>
                             <option value="3">Stage 3</option>
                         </select>
+
+                        {/* Export CSV button */}
+                        <div className="flex gap-2">
+                            <button
+                                className="rounded-xl border border-black/10 bg-white px-3 py-2 text-sm hover:bg-black/5"
+                                onClick={() => exportOrdersCsv(true)}
+                                title="Export all orders as CSV"
+                            >
+                                Export all (CSV)
+                            </button>
+
+                            <button
+                                className="rounded-xl border border-black/10 bg-white px-3 py-2 text-sm hover:bg-black/5"
+                                onClick={() => exportOrdersCsv(false)}
+                                title="Export current filtered view as CSV"
+                            >
+                                Export view (CSV)
+                            </button>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -359,6 +498,10 @@ export default function AdminOrdersClient({ initialOrders }: Props) {
 
                     const services = toStringArray(o?.services ?? o?.items?.services);
                     const upgrades = toStringArray(o?.upgrades ?? o?.items?.upgrades);
+
+                    const servicesPretty = services.map((id: string) => SERVICE_LABELS[id] ?? id);
+                    const upgradesPretty = upgrades.map((id: string) => UPSELL_LABELS[id] ?? id);
+
 
                     const amountTotal =
                         typeof o?.amountTotal === "number"
@@ -450,7 +593,7 @@ export default function AdminOrdersClient({ initialOrders }: Props) {
                             </div>
 
                             <div className="mt-3 text-sm text-black/70">
-                                <b>Shoe:</b> {shoe || "—"} • <b>Delivery:</b> {delivery || "—"}
+                                <b>Shoe:</b> {shoe ? shoeTypeLabel(shoe) : "—"} • <b>Delivery:</b> {delivery || "—"}
                             </div>
 
                             <div className="mt-2 text-sm text-black/70">
@@ -555,10 +698,10 @@ export default function AdminOrdersClient({ initialOrders }: Props) {
                                 <div className="mt-4 rounded-2xl border border-black/10 bg-black/[0.02] p-4">
                                     <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
                                         <div className="text-sm text-black/70">
-                                            <b>Services:</b> {services.join(", ") || "—"}
+                                            <b>Services:</b> {servicesPretty.join(", ") || "—"}
                                         </div>
                                         <div className="text-sm text-black/70">
-                                            <b>Upgrades:</b> {upgrades.join(", ") || "—"}
+                                            <b>Upgrades:</b> {upgradesPretty.join(", ") || "—"}
                                         </div>
 
                                         <div className="text-sm text-black/70">
