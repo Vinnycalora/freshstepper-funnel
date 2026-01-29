@@ -1,3 +1,7 @@
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
+
+
 // app/admin/orders/page.tsx
 import { listOrders } from "@/lib/orders";
 import AdminOrdersClient from "./AdminOrdersClient";
