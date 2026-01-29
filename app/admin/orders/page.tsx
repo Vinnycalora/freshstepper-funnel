@@ -1,6 +1,7 @@
-
-
 // app/admin/orders/page.tsx
+
+export const dynamic = "force-dynamic";
+
 import { listOrders } from "@/lib/orders";
 import AdminOrdersClient from "./AdminOrdersClient";
 
