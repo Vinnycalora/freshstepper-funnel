@@ -11,196 +11,189 @@ type ShoeType = "trainers" | "heels" | "other" | "kids" | "caps";
 type DeliveryMethod = "postal" | "dropoff";
 
 type Body = {
-    shoeType?: ShoeType | string;
-    services?: string[]; // “needs add-ons” now
-    upgrades?: string[]; // upsells (may include "care_plan")
-    delivery?: DeliveryMethod | string;
+  shoeType?: ShoeType | string;
+  services?: string[]; // “needs add-ons” now
+  upgrades?: string[]; // upsells (may include "care_plan")
+  delivery?: DeliveryMethod | string;
 
-    fullName?: string;
-    email?: string;
-    phone?: string;
+  fullName?: string;
+  email?: string;
+  phone?: string;
 
-    // address fields (required for postal)
-    addressLine1?: string;
-    city?: string;
-    postcode?: string;
+  // address fields (required for postal)
+  addressLine1?: string;
+  city?: string;
+  postcode?: string;
 
-    preferredDateTime?: string;
+  preferredDateTime?: string;
 };
 
 function gbpPence(pence: number) {
-    return Math.max(0, Math.round(pence));
+  return Math.max(0, Math.round(pence));
 }
 
 export async function POST(req: Request) {
-    try {
-        const body = (await req.json()) as Body;
+  try {
+    const body = (await req.json()) as Body;
 
-        const origin = req.headers.get("origin") ?? process.env.NEXT_PUBLIC_SITE_URL ?? "http://localhost:3000";
+    const origin = req.headers.get("origin") ?? process.env.NEXT_PUBLIC_SITE_URL ?? "http://localhost:3000";
 
-        const shoeType = String(body.shoeType ?? "other");
-        const services = Array.isArray(body.services) ? body.services.filter(Boolean) : [];
-        const upgrades = Array.isArray(body.upgrades) ? body.upgrades.filter(Boolean) : [];
-        const delivery = String(body.delivery ?? "postal").toLowerCase() as DeliveryMethod;
+    const shoeType = String(body.shoeType ?? "other");
+    const services = Array.isArray(body.services) ? body.services.filter(Boolean) : [];
+    const upgrades = Array.isArray(body.upgrades) ? body.upgrades.filter(Boolean) : [];
+    const delivery = String(body.delivery ?? "postal").toLowerCase() as DeliveryMethod;
 
-        const fullName = String(body.fullName ?? "");
-        const email = String(body.email ?? "");
-        const phone = String(body.phone ?? "");
+    const fullName = String(body.fullName ?? "");
+    const email = String(body.email ?? "");
+    const phone = String(body.phone ?? "");
 
-        const addressLine1 = String(body.addressLine1 ?? "");
-        const city = String(body.city ?? "");
-        const postcode = String(body.postcode ?? "");
+    const addressLine1 = String(body.addressLine1 ?? "");
+    const city = String(body.city ?? "");
+    const postcode = String(body.postcode ?? "");
 
-        const preferredDateTime = String(body.preferredDateTime ?? "");
+    const preferredDateTime = String(body.preferredDateTime ?? "");
 
-        if (!email) return NextResponse.json({ error: "Missing email" }, { status: 400 });
-        if (!fullName) return NextResponse.json({ error: "Missing fullName" }, { status: 400 });
-        if (!phone) return NextResponse.json({ error: "Missing phone" }, { status: 400 });
+    if (!email) return NextResponse.json({ error: "Missing email" }, { status: 400 });
+    if (!fullName) return NextResponse.json({ error: "Missing fullName" }, { status: 400 });
+    if (!phone) return NextResponse.json({ error: "Missing phone" }, { status: 400 });
 
-        if (delivery === "postal") {
-            if (!addressLine1 || !city || !postcode) {
-                return NextResponse.json(
-                    { error: "Postal delivery requires addressLine1, city, postcode" },
-                    { status: 400 }
-                );
-            }
-        }
-
-        const hasCarePlan = upgrades.includes("care_plan");
-        const carePlanPriceId = process.env.STRIPE_CARE_PLAN_PRICE_ID;
-
-        // Compute one-off total using shared pricing helper.
-        // If subscription selected we still want to charge one-off items,
-        // so exclude the care_plan upgrade when computing one-time total.
-        const upgradesForOneTime = upgrades.filter((u) => u !== "care_plan");
-        const oneTimeTotal = computeOneTimeTotal(shoeType, services, upgradesForOneTime) ?? 0;
-
-        // Single bundled one-off line item (keeps Stripe simple + preserves abandoned URL behaviour)
-        const oneTimeLineItems: Stripe.Checkout.SessionCreateParams.LineItem[] =
-            oneTimeTotal > 0
-                ? [
-                    {
-                        price_data: {
-                            currency: "gbp",
-                            product_data: {
-                                name: "Freshstepper Service",
-                                description: `Type: ${shoeType} • Add-ons: ${services.join(", ") || "none"} • Upgrades: ${upgradesForOneTime.join(", ") || "none"}`,
-                            },
-                            unit_amount: oneTimeTotal,
-                        },
-                        quantity: 1,
-                    },
-                ]
-                : [];
-
-        const success_url = `${origin}/thank-you?session_id={CHECKOUT_SESSION_ID}`;
-        const cancel_url = `${origin}/checkout?canceled=1`;
-
-        const metadata: Record<string, string> = {
-            shoeType,
-            services: JSON.stringify(services),
-            upgrades: JSON.stringify(upgrades),
-            delivery,
-
-            fullName,
-            phone,
-            preferredDateTime,
-
-            // Sendcloud-required address fields (even if dropoff, keep stable keys)
-            addressLine1: addressLine1 || "",
-            city: city || "",
-            postcode: postcode || "",
-            country: "GB",
-        };
-
-        let session: Stripe.Checkout.Session;
-
-        if (hasCarePlan) {
-            if (!carePlanPriceId) {
-                return NextResponse.json(
-                    { error: "Missing STRIPE_CARE_PLAN_PRICE_ID for subscription mode" },
-                    { status: 500 }
-                );
-            }
-
-            // Important: include one-off items first, then subscription price.
-            // This ensures the checkout includes the one-off charge in the first invoice.
-            const lineItems: Stripe.Checkout.SessionCreateParams.LineItem[] = [
-                ...oneTimeLineItems,
-                { price: carePlanPriceId, quantity: 1 },
-            ];
-
-            if (process.env.NODE_ENV !== "production") {
-                // helpful server-side debug during development
-                console.log("Creating Stripe checkout session (subscription):", {
-                    mode: "subscription",
-                    email,
-                    lineItems,
-                    metadata,
-                });
-            }
-
-            session = await stripe.checkout.sessions.create({
-                mode: "subscription",
-                customer_email: email,
-                success_url,
-                cancel_url,
-                metadata,
-                line_items: lineItems,
-            });
-        } else {
-            if (process.env.NODE_ENV !== "production") {
-                console.log("Creating Stripe checkout session (one-off):", {
-                    mode: "payment",
-                    email,
-                    lineItems: oneTimeLineItems,
-                    metadata,
-                });
-            }
-
-            session = await stripe.checkout.sessions.create({
-                mode: "payment",
-                customer_email: email,
-                success_url,
-                cancel_url,
-                metadata,
-                line_items: oneTimeLineItems,
-            });
-        }
-
-        // Save unpaid order at checkout start (for abandoned checker)
-        upsertOrder({
-            id: session.id,
-            createdAt: new Date().toISOString(),
-            email,
-            customerEmail: email,
-            name: fullName,
-            phone,
-
-            shoeType,
-            services,
-            upgrades,
-            delivery,
-
-            addressLine1: addressLine1 || null,
-            city: city || null,
-            postcode: postcode || null,
-
-            preferredDateTime: preferredDateTime || null,
-
-            paymentMode: hasCarePlan ? "subscription" : "one_off",
-            paymentStatus: "unpaid",
-            amountTotal: hasCarePlan ? null : gbpPence(oneTimeTotal),
-            currency: "gbp",
-
-            checkoutUrl: session.url || null,
-        });
-
-        return NextResponse.json({ url: session.url });
-    } catch (e: unknown) {
-        const msg = e instanceof Error ? e.message : String(e);
-        return NextResponse.json({ error: msg }, { status: 500 });
+    if (delivery === "postal") {
+      if (!addressLine1 || !city || !postcode) {
+        return NextResponse.json(
+          { error: "Postal delivery requires addressLine1, city, postcode" },
+          { status: 400 }
+        );
+      }
     }
+
+    const hasCarePlan = upgrades.includes("care_plan");
+    const carePlanPriceId = process.env.STRIPE_CARE_PLAN_PRICE_ID;
+
+    // Compute one-off total excluding care_plan so one-off items are charged even with subscription
+    const upgradesForOneTime = upgrades.filter((u) => u !== "care_plan");
+    const oneTimeTotal = computeOneTimeTotal(shoeType, services, upgradesForOneTime) ?? 0;
+
+    const oneTimeLineItems: Stripe.Checkout.SessionCreateParams.LineItem[] =
+      oneTimeTotal > 0
+        ? [
+            {
+              price_data: {
+                currency: "gbp",
+                product_data: {
+                  name: "Freshstepper Service",
+                  description: `Type: ${shoeType} • Add-ons: ${services.join(", ") || "none"} • Upgrades: ${upgradesForOneTime.join(", ") || "none"}`,
+                },
+                unit_amount: oneTimeTotal,
+              },
+              quantity: 1,
+            },
+          ]
+        : [];
+
+    const success_url = `${origin}/thank-you?session_id={CHECKOUT_SESSION_ID}`;
+    const cancel_url = `${origin}/checkout?canceled=1`;
+
+    const metadata: Record<string, string> = {
+      shoeType,
+      services: JSON.stringify(services),
+      upgrades: JSON.stringify(upgrades),
+      delivery,
+
+      fullName,
+      phone,
+      preferredDateTime,
+
+      addressLine1: addressLine1 || "",
+      city: city || "",
+      postcode: postcode || "",
+      country: "GB",
+    };
+
+    let session: Stripe.Checkout.Session;
+
+    if (hasCarePlan) {
+      if (!carePlanPriceId) {
+        return NextResponse.json(
+          { error: "Missing STRIPE_CARE_PLAN_PRICE_ID for subscription mode" },
+          { status: 500 }
+        );
+      }
+
+      const lineItems: Stripe.Checkout.SessionCreateParams.LineItem[] = [
+        ...oneTimeLineItems,
+        { price: carePlanPriceId, quantity: 1 },
+      ];
+
+      if (process.env.NODE_ENV !== "production") {
+        console.log("Creating Stripe checkout session (subscription):", {
+          mode: "subscription",
+          email,
+          lineItems,
+          metadata,
+        });
+      }
+
+      session = await stripe.checkout.sessions.create({
+        mode: "subscription",
+        customer_email: email,
+        success_url,
+        cancel_url,
+        metadata,
+        line_items: lineItems,
+      });
+    } else {
+      if (process.env.NODE_ENV !== "production") {
+        console.log("Creating Stripe checkout session (one-off):", {
+          mode: "payment",
+          email,
+          lineItems: oneTimeLineItems,
+          metadata,
+        });
+      }
+
+      session = await stripe.checkout.sessions.create({
+        mode: "payment",
+        customer_email: email,
+        success_url,
+        cancel_url,
+        metadata,
+        line_items: oneTimeLineItems,
+      });
+    }
+
+    // Save unpaid order at checkout start (Postgres)
+    await upsertOrder({
+      id: session.id,
+      createdAt: new Date().toISOString(),
+      email,
+      customerEmail: email,
+      name: fullName,
+      phone,
+
+      shoeType,
+      services,
+      upgrades,
+      delivery,
+
+      addressLine1: addressLine1 || null,
+      city: city || null,
+      postcode: postcode || null,
+
+      preferredDateTime: preferredDateTime || null,
+
+      paymentMode: hasCarePlan ? "subscription" : "one_off",
+      paymentStatus: "unpaid",
+      amountTotal: hasCarePlan ? null : gbpPence(oneTimeTotal),
+      currency: "gbp",
+
+      checkoutUrl: session.url || null,
+    });
+
+    return NextResponse.json({ url: session.url });
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e);
+    return NextResponse.json({ error: msg }, { status: 500 });
+  }
 }
 
 

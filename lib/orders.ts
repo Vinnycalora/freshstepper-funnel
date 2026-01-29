@@ -1,264 +1,331 @@
-import fs from "fs";
-import path from "path";
-
-export type StatusHistoryEntry = { status: string; at: string };
+import postgres from "postgres";
 
 export type StoredOrder = {
-    id: string;               // Stripe checkout session id (stable key)
-    shortRef?: string;        // FS-YYYYMMDD-001
+  id: string;
+  createdAt?: string;
 
-    createdAt?: string;
+  shortRef?: string | null;
 
-    // Canonical customer
-    customerEmail?: string | null;
-    email?: string | null;    // legacy alias (kept in sync)
-    name?: string | null;
-    phone?: string | null;
+  email?: string | null;
+  customerEmail?: string | null;
+  name?: string | null;
+  phone?: string | null;
 
-    // Canonical payment
-    paymentMode?: "one_off" | "subscription" | "unknown" | null;
-    mode?: string | null; // legacy: "payment" | "subscription"
-    paymentStatus?: string | null;
+  shoeType?: string | null;
+  services?: string[];
+  upgrades?: string[];
+  delivery?: string | null;
 
-    // Canonical order selections
-    shoeType?: string | null;
-    services?: string[];
-    upgrades?: string[];
-    delivery?: string | null;
+  addressLine1?: string | null;
+  city?: string | null;
+  postcode?: string | null;
+  preferredDateTime?: string | null;
 
-    // totals
-    amountTotal?: number | null; // in minor units
-    currency?: string | null;
+  paymentMode?: "one_off" | "subscription" | string | null;
+  paymentStatus?: "paid" | "unpaid" | string | null;
+  amountTotal?: number | null;
+  currency?: string | null;
+  checkoutUrl?: string | null;
 
-    // Stripe ids
-    stripeCustomerId?: string | null;
-    stripeSubscriptionId?: string | null;
+  mode?: "payment" | "subscription" | string | null;
+  stripeCustomerId?: string | null;
+  stripeSubscriptionId?: string | null;
 
-    // Sendcloud (flat fields for now)
-    shippingLabelId?: number | null; // parcel id
-    trackingNumber?: string | null;
-    trackingUrl?: string | null;
-    sendcloudStatus?: string | null;
+  // Sendcloud
+  sendcloudStatus?: string | null;
+  sendcloudStatusUpdatedAt?: string | null;
+  sendcloudStatusHistory?: { status: string; at: string }[];
+  shippingLabelId?: number | null;
+  trackingNumber?: string | null;
+  trackingUrl?: string | null;
 
-    // Sendcloud metadata
-    sendcloudStatusUpdatedAt?: string | null;
-    sendcloudStatusHistory?: StatusHistoryEntry[];
+  // Abandoned automation
+  abandonedStage?: number | null;
+  abandonedFirstAt?: string | null;
+  abandonedLastAt?: string | null;
 
-    checkoutUrl?: string | null;          // Stripe session.url recovery link
-    abandonedStage?: number | null;       // 0/1/2/3 etc.
-    abandonedFirstAt?: string | null;     // when we first triggered stage 1
-    abandonedLastAt?: string | null;      // last time we attempted
-
-
-    [key: string]: any;
+  [key: string]: any;
 };
 
-const ORDERS_PATH = path.join(process.cwd(), "data", "orders.json");
-
-function readOrders(): StoredOrder[] {
-    try {
-        const raw = fs.readFileSync(ORDERS_PATH, "utf8");
-        const parsed = JSON.parse(raw);
-        return Array.isArray(parsed) ? parsed : [];
-    } catch {
-        return [];
-    }
+function requiredEnv(name: string): string {
+  const v = process.env[name];
+  if (!v) throw new Error(`Missing env var: ${name}`);
+  return v;
 }
 
-function writeOrders(orders: StoredOrder[]) {
-    fs.mkdirSync(path.dirname(ORDERS_PATH), { recursive: true });
-    fs.writeFileSync(ORDERS_PATH, JSON.stringify(orders, null, 2), "utf8");
-}
+// Keep a singleton across serverless invocations
+const globalForDb = globalThis as unknown as { __sql?: ReturnType<typeof postgres> };
 
-function ensureStringArray(v: any): string[] {
-    if (!v) return [];
-    if (Array.isArray(v)) return v.map(String).filter(Boolean);
-    if (typeof v === "string") {
-        try {
-            const parsed = JSON.parse(v);
-            if (Array.isArray(parsed)) return parsed.map(String).filter(Boolean);
-        } catch { }
-        return v.split(",").map((s) => s.trim()).filter(Boolean);
-    }
-    return [];
-}
-
-function toStatusString(value: any): string | null {
-    if (value == null) return null;
-    if (typeof value === "string") return value;
-    if (typeof value === "object") {
-        return value.message ?? JSON.stringify(value);
-    }
-    return String(value);
-}
-
-function generateShortRef(existing: StoredOrder[]): string {
-    const d = new Date();
-    const y = String(d.getFullYear());
-    const m = String(d.getMonth() + 1).padStart(2, "0");
-    const day = String(d.getDate()).padStart(2, "0");
-    const date = `${y}${m}${day}`;
-
-    const prefix = `FS-${date}-`;
-    let max = 0;
-
-    for (const o of existing) {
-        const r = o.shortRef;
-        if (typeof r !== "string" || !r.startsWith(prefix)) continue;
-        const n = Number(r.slice(prefix.length));
-        if (!Number.isNaN(n) && n > max) max = n;
-    }
-
-    return `${prefix}${String(max + 1).padStart(3, "0")}`;
-}
-
-/**
- * Normalise + canonicalise an order merge.
- * This is the key to “standardisation”.
- */
-function normaliseMergedOrder(merged: StoredOrder, existing?: StoredOrder | null): StoredOrder {
-    // createdAt only set once
-    if (!merged.createdAt) merged.createdAt = existing?.createdAt ?? new Date().toISOString();
-
-    // shortRef only set once
-    if (!merged.shortRef) merged.shortRef = existing?.shortRef ?? generateShortRef(readOrders());
-
-    // email alias sync
-    if (!merged.customerEmail && merged.email) merged.customerEmail = merged.email;
-    if (!merged.email && merged.customerEmail) merged.email = merged.customerEmail;
-
-    // paymentMode canonical
-    if (!merged.paymentMode) {
-        if (merged.mode === "subscription") merged.paymentMode = "subscription";
-        else if (merged.mode === "payment") merged.paymentMode = "one_off";
-        else if (typeof merged.mode === "string" && merged.mode) merged.paymentMode = "unknown";
-        else merged.paymentMode = existing?.paymentMode ?? null;
-    }
-
-    // ensure arrays
-    merged.services = ensureStringArray(merged.services ?? existing?.services);
-    merged.upgrades = ensureStringArray(merged.upgrades ?? existing?.upgrades);
-
-    // normalise sendcloud status to string
-    merged.sendcloudStatus = toStatusString(merged.sendcloudStatus ?? existing?.sendcloudStatus);
-
-    // delivery normalization
-    if (typeof merged.delivery === "string") merged.delivery = merged.delivery.toLowerCase();
-
-    return merged;
-}
-
-
-export function isPaid(order: any): boolean {
-    const s = String(order?.paymentStatus ?? "").toLowerCase();
-    return s === "paid";
-}
-
-export function listAbandonedCandidates(opts?: { minutes?: number }) {
-    const minutes = opts?.minutes ?? 10;
-    const cutoff = Date.now() - minutes * 60 * 1000;
-
-    return listOrders().filter((o: any) => {
-        if (isPaid(o)) return false;
-
-        // must have recovery link to be useful
-        const url = String(o?.checkoutUrl ?? "");
-        if (!url) return false;
-
-        // must have email to contact
-        const email = String(o?.customerEmail ?? o?.email ?? "");
-        if (!email) return false;
-
-        // createdAt check
-        const createdAt = Date.parse(String(o?.createdAt ?? ""));
-        if (!Number.isFinite(createdAt)) return false;
-        if (createdAt > cutoff) return false;
-
-        // not already contacted
-        const stage = Number(o?.abandonedStage ?? 0);
-        if (stage >= 1) return false;
-
-        return true;
+function db() {
+  if (!globalForDb.__sql) {
+    globalForDb.__sql = postgres(requiredEnv("DATABASE_URL"), {
+      ssl: "require",
+      // tune pool in env if needed
     });
+  }
+  return globalForDb.__sql!;
 }
 
-export function markAbandonedStage(orderId: string, stage: number) {
-    const now = new Date().toISOString();
-    return upsertOrder({
-        id: orderId,
-        abandonedStage: stage,
-        abandonedFirstAt: stage === 1 ? now : undefined,
-        abandonedLastAt: now,
-    } as any);
-}
-
-/**
- * Upsert order (only id required). Returns saved order.
- * Protects: shortRef, createdAt, history.
- */
-export function upsertOrder(update: Partial<StoredOrder> & { id: string }): StoredOrder {
-    const orders = readOrders();
-    const idx = orders.findIndex((o) => o.id === update.id);
-    const existing = idx >= 0 ? orders[idx] : null;
-
-    const merged: StoredOrder = normaliseMergedOrder(
-        { ...(existing ?? { id: update.id }), ...update },
-        existing
-    );
-
-    if (idx >= 0) orders[idx] = merged;
-    else orders.unshift(merged);
-
-    writeOrders(orders);
-    return merged;
-}
-
-export function listOrders(): StoredOrder[] {
-    return readOrders();
-}
-
-export function getOrderById(id: string) {
-    return readOrders().find((o) => o.id === id) ?? null;
+function normaliseMergedOrder(incoming: StoredOrder): StoredOrder {
+  return {
+    ...incoming,
+    services: Array.isArray(incoming.services) ? incoming.services : [],
+    upgrades: Array.isArray(incoming.upgrades) ? incoming.upgrades : [],
+    sendcloudStatusHistory: Array.isArray(incoming.sendcloudStatusHistory)
+      ? incoming.sendcloudStatusHistory
+      : [],
+  };
 }
 
 /**
- * Sendcloud status update helper (keeps history + timestamp).
+ * Upsert order to Postgres. Merges with existing record to preserve fields similar to former JSON merge.
  */
-export function applySendcloudStatusUpdate(
-    existing: any,
-    incoming: {
-        parcelId?: number | null;
-        trackingNumber?: string | null;
-        trackingUrl?: string | null;
-        status?: any;
-    }
-) {
-    const now = new Date().toISOString();
-    const statusStr = toStatusString(incoming.status);
+export async function upsertOrder(incoming: StoredOrder): Promise<StoredOrder> {
+  const sql = db();
+  const o = normaliseMergedOrder(incoming);
 
-    const prevStatus = toStatusString(existing?.sendcloudStatus) ?? "";
-    const newStatus = statusStr ?? "";
+  // Fetch existing to merge
+  const existing = await getOrderById(o.id);
+  const merged: StoredOrder = normaliseMergedOrder({ ...(existing ?? {}), ...o });
 
-    const next: any = {
-        ...existing,
-        shippingLabelId: incoming.parcelId ?? existing?.shippingLabelId ?? null,
-        trackingNumber: incoming.trackingNumber ?? existing?.trackingNumber ?? null,
-        trackingUrl: incoming.trackingUrl ?? existing?.trackingUrl ?? null,
-        sendcloudStatus: statusStr ?? existing?.sendcloudStatus ?? null,
-    };
+  const createdAt = merged.createdAt ?? new Date().toISOString();
 
-    if (newStatus && newStatus !== prevStatus) {
-        const history = Array.isArray(existing?.sendcloudStatusHistory)
-            ? existing.sendcloudStatusHistory.slice()
-            : [];
+  await sql`
+    insert into public.orders (
+      id, created_at,
+      short_ref,
+      email, customer_email, name, phone,
+      shoe_type, services, upgrades, delivery,
+      address_line1, city, postcode, preferred_date_time,
+      payment_mode, payment_status, amount_total, currency, checkout_url,
+      mode, stripe_customer_id, stripe_subscription_id,
+      sendcloud_status, sendcloud_status_updated_at, sendcloud_status_history,
+      shipping_label_id, tracking_number, tracking_url,
+      abandoned_stage, abandoned_first_at, abandoned_last_at
+    ) values (
+      ${merged.id}, ${createdAt},
+      ${merged.shortRef ?? null},
+      ${merged.email ?? null}, ${merged.customerEmail ?? null}, ${merged.name ?? null}, ${merged.phone ?? null},
+      ${merged.shoeType ?? null}, ${sql.json(merged.services ?? [])}, ${sql.json(merged.upgrades ?? [])}, ${merged.delivery ?? null},
+      ${merged.addressLine1 ?? null}, ${merged.city ?? null}, ${merged.postcode ?? null}, ${merged.preferredDateTime ?? null},
+      ${merged.paymentMode ?? null}, ${merged.paymentStatus ?? null}, ${merged.amountTotal ?? null}, ${merged.currency ?? null}, ${merged.checkoutUrl ?? null},
+      ${merged.mode ?? null}, ${merged.stripeCustomerId ?? null}, ${merged.stripeSubscriptionId ?? null},
+      ${merged.sendcloudStatus ?? null}, ${merged.sendcloudStatusUpdatedAt ?? null}, ${sql.json(merged.sendcloudStatusHistory ?? [])},
+      ${merged.shippingLabelId ?? null}, ${merged.trackingNumber ?? null}, ${merged.trackingUrl ?? null},
+      ${merged.abandonedStage ?? null}, ${merged.abandonedFirstAt ?? null}, ${merged.abandonedLastAt ?? null}
+    )
+    on conflict (id) do update set
+      created_at = excluded.created_at,
+      short_ref = excluded.short_ref,
+      email = excluded.email,
+      customer_email = excluded.customer_email,
+      name = excluded.name,
+      phone = excluded.phone,
+      shoe_type = excluded.shoe_type,
+      services = excluded.services,
+      upgrades = excluded.upgrades,
+      delivery = excluded.delivery,
+      address_line1 = excluded.address_line1,
+      city = excluded.city,
+      postcode = excluded.postcode,
+      preferred_date_time = excluded.preferred_date_time,
+      payment_mode = excluded.payment_mode,
+      payment_status = excluded.payment_status,
+      amount_total = excluded.amount_total,
+      currency = excluded.currency,
+      checkout_url = excluded.checkout_url,
+      mode = excluded.mode,
+      stripe_customer_id = excluded.stripe_customer_id,
+      stripe_subscription_id = excluded.stripe_subscription_id,
+      sendcloud_status = excluded.sendcloud_status,
+      sendcloud_status_updated_at = excluded.sendcloud_status_updated_at,
+      sendcloud_status_history = excluded.sendcloud_status_history,
+      shipping_label_id = excluded.shipping_label_id,
+      tracking_number = excluded.tracking_number,
+      tracking_url = excluded.tracking_url,
+      abandoned_stage = excluded.abandoned_stage,
+      abandoned_first_at = excluded.abandoned_first_at,
+      abandoned_last_at = excluded.abandoned_last_at
+  `;
 
-        history.push({ status: newStatus, at: now });
-        next.sendcloudStatusHistory = history;
-        next.sendcloudStatusUpdatedAt = now;
-    } else if (!existing?.sendcloudStatusUpdatedAt && (existing?.sendcloudStatus || newStatus)) {
-        next.sendcloudStatusUpdatedAt = now;
-    }
+  return merged;
+}
 
-    return next;
+/**
+ * List recent orders (limit set to 500 to avoid huge payloads).
+ */
+export async function listOrders(): Promise<StoredOrder[]> {
+  const sql = db();
+  const rows = await sql`
+    select
+      id,
+      created_at,
+      short_ref,
+      email, customer_email, name, phone,
+      shoe_type, services, upgrades, delivery,
+      address_line1, city, postcode, preferred_date_time,
+      payment_mode, payment_status, amount_total, currency, checkout_url,
+      mode, stripe_customer_id, stripe_subscription_id,
+      sendcloud_status, sendcloud_status_updated_at, sendcloud_status_history,
+      shipping_label_id, tracking_number, tracking_url,
+      abandoned_stage, abandoned_first_at, abandoned_last_at
+    from public.orders
+    order by created_at desc
+    limit 500
+  `;
+
+  return rows.map((r: any) => ({
+    id: r.id,
+    createdAt: r.created_at ? new Date(r.created_at).toISOString() : undefined,
+    shortRef: r.short_ref ?? undefined,
+
+    email: r.email ?? undefined,
+    customerEmail: r.customer_email ?? undefined,
+    name: r.name ?? undefined,
+    phone: r.phone ?? undefined,
+
+    shoeType: r.shoe_type ?? undefined,
+    services: r.services ?? [],
+    upgrades: r.upgrades ?? [],
+    delivery: r.delivery ?? undefined,
+
+    addressLine1: r.address_line1 ?? undefined,
+    city: r.city ?? undefined,
+    postcode: r.postcode ?? undefined,
+    preferredDateTime: r.preferred_date_time ?? undefined,
+
+    paymentMode: r.payment_mode ?? undefined,
+    paymentStatus: r.payment_status ?? undefined,
+    amountTotal: r.amount_total ?? undefined,
+    currency: r.currency ?? undefined,
+    checkoutUrl: r.checkout_url ?? undefined,
+
+    mode: r.mode ?? undefined,
+    stripeCustomerId: r.stripe_customer_id ?? undefined,
+    stripeSubscriptionId: r.stripe_subscription_id ?? undefined,
+
+    sendcloudStatus: r.sendcloud_status ?? undefined,
+    sendcloudStatusUpdatedAt: r.sendcloud_status_updated_at
+      ? new Date(r.sendcloud_status_updated_at).toISOString()
+      : undefined,
+    sendcloudStatusHistory: r.sendcloud_status_history ?? [],
+    shippingLabelId: r.shipping_label_id ?? undefined,
+    trackingNumber: r.tracking_number ?? undefined,
+    trackingUrl: r.tracking_url ?? undefined,
+
+    abandonedStage: r.abandoned_stage ?? undefined,
+    abandonedFirstAt: r.abandoned_first_at ? new Date(r.abandoned_first_at).toISOString() : undefined,
+    abandonedLastAt: r.abandoned_last_at ? new Date(r.abandoned_last_at).toISOString() : undefined,
+  }));
+}
+
+export async function getOrderById(id: string): Promise<StoredOrder | null> {
+  const sql = db();
+  const rows = await sql`
+    select
+      id,
+      created_at,
+      short_ref,
+      email, customer_email, name, phone,
+      shoe_type, services, upgrades, delivery,
+      address_line1, city, postcode, preferred_date_time,
+      payment_mode, payment_status, amount_total, currency, checkout_url,
+      mode, stripe_customer_id, stripe_subscription_id,
+      sendcloud_status, sendcloud_status_updated_at, sendcloud_status_history,
+      shipping_label_id, tracking_number, tracking_url,
+      abandoned_stage, abandoned_first_at, abandoned_last_at
+    from public.orders
+    where id = ${id}
+    limit 1
+  `;
+
+  const r: any = rows[0];
+  if (!r) return null;
+
+  return {
+    id: r.id,
+    createdAt: r.created_at ? new Date(r.created_at).toISOString() : undefined,
+    shortRef: r.short_ref ?? undefined,
+
+    email: r.email ?? undefined,
+    customerEmail: r.customer_email ?? undefined,
+    name: r.name ?? undefined,
+    phone: r.phone ?? undefined,
+
+    shoeType: r.shoe_type ?? undefined,
+    services: r.services ?? [],
+    upgrades: r.upgrades ?? [],
+    delivery: r.delivery ?? undefined,
+
+    addressLine1: r.address_line1 ?? undefined,
+    city: r.city ?? undefined,
+    postcode: r.postcode ?? undefined,
+    preferredDateTime: r.preferred_date_time ?? undefined,
+
+    paymentMode: r.payment_mode ?? undefined,
+    paymentStatus: r.payment_status ?? undefined,
+    amountTotal: r.amount_total ?? undefined,
+    currency: r.currency ?? undefined,
+    checkoutUrl: r.checkout_url ?? undefined,
+
+    mode: r.mode ?? undefined,
+    stripeCustomerId: r.stripe_customer_id ?? undefined,
+    stripeSubscriptionId: r.stripe_subscription_id ?? undefined,
+
+    sendcloudStatus: r.sendcloud_status ?? undefined,
+    sendcloudStatusUpdatedAt: r.sendcloud_status_updated_at
+      ? new Date(r.sendcloud_status_updated_at).toISOString()
+      : undefined,
+    sendcloudStatusHistory: r.sendcloud_status_history ?? [],
+    shippingLabelId: r.shipping_label_id ?? undefined,
+    trackingNumber: r.tracking_number ?? undefined,
+    trackingUrl: r.tracking_url ?? undefined,
+
+    abandonedStage: r.abandoned_stage ?? undefined,
+    abandonedFirstAt: r.abandoned_first_at ? new Date(r.abandoned_first_at).toISOString() : undefined,
+    abandonedLastAt: r.abandoned_last_at ? new Date(r.abandoned_last_at).toISOString() : undefined,
+  };
+}
+
+/**
+ * Update sendcloud-related fields and append history (orderId based).
+ */
+export async function applySendcloudStatusUpdate(
+  orderId: string,
+  status: string | null,
+  opts?: { trackingNumber?: string | null; trackingUrl?: string | null; shippingLabelId?: number | null }
+): Promise<void> {
+  const existing = await getOrderById(orderId);
+  if (!existing) return;
+
+  const nowIso = new Date().toISOString();
+  const history = Array.isArray(existing.sendcloudStatusHistory) ? [...existing.sendcloudStatusHistory] : [];
+  if (status) history.push({ status, at: nowIso });
+
+  await upsertOrder({
+    ...existing,
+    sendcloudStatus: status ?? existing.sendcloudStatus ?? null,
+    sendcloudStatusUpdatedAt: nowIso,
+    sendcloudStatusHistory: history,
+    trackingNumber: opts?.trackingNumber ?? existing.trackingNumber ?? null,
+    trackingUrl: opts?.trackingUrl ?? existing.trackingUrl ?? null,
+    shippingLabelId: opts?.shippingLabelId ?? existing.shippingLabelId ?? null,
+  });
+}
+
+/**
+ * Mark abandoned stage (orderId based)
+ */
+export async function markAbandonedStage(orderId: string, stage: number, now: Date = new Date()): Promise<void> {
+  const existing = await getOrderById(orderId);
+  if (!existing) return;
+
+  const nowIso = now.toISOString();
+  await upsertOrder({
+    ...existing,
+    abandonedStage: stage,
+    abandonedFirstAt: existing.abandonedFirstAt ?? nowIso,
+    abandonedLastAt: nowIso,
+  });
 }
 
