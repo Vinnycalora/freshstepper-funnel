@@ -5,6 +5,7 @@ import { getOrderById, upsertOrder, applySendcloudStatusUpdate } from "@/lib/ord
 
 export const runtime = "nodejs";
 
+// ✅ remove apiVersion to avoid TS mismatch (your Stripe types are newer)
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!);
 
 export async function GET() {
@@ -51,34 +52,42 @@ export async function POST(req: Request) {
         const upgrades = safeParseArray(session.metadata?.upgrades);
 
         const email = session.customer_details?.email ?? session.customer_email ?? null;
+          
+        // Extract explicit payment fields so we reliably persist them
+        const paymentStatus = session.payment_status ?? null;
+        const amountTotal = typeof session.amount_total === "number" ? session.amount_total : null;
+        const currency = session.currency ?? null;
+        const stripeCustomerId = typeof session.customer === "string" ? session.customer : (session.customer as any)?.id ?? null;
+        const stripeSubscriptionId = typeof session.subscription === "string" ? session.subscription : null;
+        const mode = session.mode ?? null;
 
-        // Save canonical order (Postgres) and await
-        const savedOrder = await upsertOrder({
+        // Upsert canonical order (Postgres) and ensure payment fields are written
+        await upsertOrder({
           id: session.id,
           createdAt: new Date().toISOString(),
 
+          // canonical + alias
           customerEmail: email,
           email,
 
           name: session.customer_details?.name ?? null,
           phone: session.customer_details?.phone ?? session.metadata?.phone ?? null,
 
-          mode: session.mode ?? null,
-          paymentMode:
-            session.mode === "subscription" ? "subscription" : session.mode === "payment" ? "one_off" : "unknown",
+          // canonical payment mode + legacy raw mode
+          mode,
+          paymentMode: mode === "subscription" ? "subscription" : mode === "payment" ? "one_off" : "unknown",
 
-          paymentStatus: session.payment_status ?? null,
-
+          paymentStatus,
           shoeType: session.metadata?.shoeType ?? null,
           services,
           upgrades,
           delivery: session.metadata?.delivery ?? null,
 
-          amountTotal: session.amount_total ?? null,
-          currency: session.currency ?? null,
+          amountTotal,
+          currency,
 
-          stripeCustomerId: (session.customer as string) ?? null,
-          stripeSubscriptionId: (session.subscription as string) ?? null,
+          stripeCustomerId,
+          stripeSubscriptionId,
         });
 
         // If postal delivery, create Sendcloud parcel then update order via applySendcloudStatusUpdate
@@ -106,7 +115,8 @@ export async function POST(req: Request) {
 
           const parcelResp = await createSendcloudParcel({
             orderNumber:
-              savedOrder.shortRef ??
+              // get shortRef from DB (upsert may have set it) or fallback
+              (await getOrderById(session.id))?.shortRef ??
               `FS-${String(session.id).replace(/^cs_/, "").slice(0, 44)}`,
             name: fullName,
             email: safeEmail,
@@ -135,6 +145,7 @@ export async function POST(req: Request) {
       }
 
       default:
+        // keep quiet for now
         break;
     }
   } catch (err: unknown) {
