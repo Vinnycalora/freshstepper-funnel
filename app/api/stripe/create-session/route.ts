@@ -69,7 +69,7 @@ export async function POST(req: Request) {
         const hasCarePlan = upgrades.includes("care_plan");
         const carePlanPriceId = process.env.STRIPE_CARE_PLAN_PRICE_ID;
 
-        // Totals: compute one-off total using shared pricing helper
+        // Totals: compute one-off total using shared pricing helper!
         const upgradesForOneTime = upgrades.filter((u) => u !== "care_plan");
         const oneTimeTotal = computeOneTimeTotal(shoeType, services, upgradesForOneTime) ?? 0;
 
