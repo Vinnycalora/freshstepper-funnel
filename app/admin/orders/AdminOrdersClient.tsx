@@ -1,6 +1,8 @@
 "use client";
 
 import * as React from "react";
+import { SERVICE_LABELS, UPSELL_LABELS, shoeTypeLabel } from "@/components/labels";
+
 
 function toText(v: unknown): string {
     if (v == null) return "";
@@ -360,6 +362,10 @@ export default function AdminOrdersClient({ initialOrders }: Props) {
                     const services = toStringArray(o?.services ?? o?.items?.services);
                     const upgrades = toStringArray(o?.upgrades ?? o?.items?.upgrades);
 
+                    const servicesPretty = services.map((id: string) => SERVICE_LABELS[id] ?? id);
+                    const upgradesPretty = upgrades.map((id: string) => UPSELL_LABELS[id] ?? id);
+
+
                     const amountTotal =
                         typeof o?.amountTotal === "number"
                             ? o.amountTotal
@@ -450,7 +456,7 @@ export default function AdminOrdersClient({ initialOrders }: Props) {
                             </div>
 
                             <div className="mt-3 text-sm text-black/70">
-                                <b>Shoe:</b> {shoe || "—"} • <b>Delivery:</b> {delivery || "—"}
+                                <b>Shoe:</b> {shoe ? shoeTypeLabel(shoe) : "—"} • <b>Delivery:</b> {delivery || "—"}
                             </div>
 
                             <div className="mt-2 text-sm text-black/70">
@@ -555,10 +561,10 @@ export default function AdminOrdersClient({ initialOrders }: Props) {
                                 <div className="mt-4 rounded-2xl border border-black/10 bg-black/[0.02] p-4">
                                     <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
                                         <div className="text-sm text-black/70">
-                                            <b>Services:</b> {services.join(", ") || "—"}
+                                            <b>Services:</b> {servicesPretty.join(", ") || "—"}
                                         </div>
                                         <div className="text-sm text-black/70">
-                                            <b>Upgrades:</b> {upgrades.join(", ") || "—"}
+                                            <b>Upgrades:</b> {upgradesPretty.join(", ") || "—"}
                                         </div>
 
                                         <div className="text-sm text-black/70">

@@ -44,7 +44,7 @@ export default function Home() {
                             </div>
 
                             <h1 className="mt-5 text-4xl font-extrabold uppercase leading-[1.05] tracking-tight sm:text-5xl">
-                                Premium Shoe Cleaning &amp; Restoration — UK Wide
+                                Premium Shoe Cleaning &amp; Restoration UK Wide
                             </h1>
 
                             <p className="mt-4 max-w-xl text-base text-black/70 sm:text-lg">

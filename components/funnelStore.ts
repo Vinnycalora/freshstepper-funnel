@@ -1,4 +1,4 @@
-export type ShoeType = "trainers" | "heels" | "other";
+export type ShoeType = "trainers" | "heels" | "other" | "kids" | "caps";
 
 export type FunnelCustomer = {
     fullName?: string;
@@ -6,7 +6,7 @@ export type FunnelCustomer = {
     phone?: string;
     postcode?: string;
     address?: string;
-    city?: string;  
+    city?: string;
     preferredDateTime?: string;
 };
 
@@ -14,13 +14,30 @@ export type DeliveryMethod = "postal" | "dropoff";
 
 export type FunnelState = {
     shoeType?: ShoeType;
-    services?: string[];
-    upgrades?: string[];
+    services?: string[]; // "needs add-ons"
+    upgrades?: string[]; // upsells incl. care_plan
     delivery?: DeliveryMethod;
     customer?: FunnelCustomer;
 };
 
 const STORAGE_KEY = "freshstepper:funnel_state:v1";
+
+// ✅ Shoe-type validity rules (prevents invalid carry-over)
+const ALLOWED_SERVICES_BY_SHOETYPE: Record<ShoeType, string[]> = {
+    trainers: ["louboutin_sole_refresh", "deoxidisation", "new_laces"],
+    heels: ["louboutin_sole_refresh"],
+    other: [],
+    kids: [],
+    caps: [],
+};
+
+const ALLOWED_UPGRADES_BY_SHOETYPE: Record<ShoeType, string[]> = {
+    trainers: ["shoe_trees", "stain_protect", "express_priority", "care_plan"],
+    heels: ["stain_protect", "express_priority", "care_plan"],
+    other: ["shoe_trees", "stain_protect", "express_priority", "care_plan"],
+    kids: ["stain_protect", "express_priority", "care_plan"],
+    caps: ["stain_protect", "express_priority", "care_plan"],
+};
 
 export const defaultFunnelState: FunnelState = {
     shoeType: undefined,
@@ -62,14 +79,26 @@ export function getFunnelState(): FunnelState {
 
 export function updateFunnelState(next: Partial<FunnelState>) {
     const current = getFunnelState();
+
     // Merge customer deeply if provided
     const customer =
         next.customer !== undefined ? { ...(current.customer ?? {}), ...(next.customer ?? {}) } : current.customer;
+
     const merged: FunnelState = {
         ...current,
         ...next,
         customer,
     };
+
+    // ✅ If shoeType is set/changed, prune invalid services/upgrades
+    if (merged.shoeType) {
+        const allowedServices = ALLOWED_SERVICES_BY_SHOETYPE[merged.shoeType] ?? [];
+        const allowedUpgrades = ALLOWED_UPGRADES_BY_SHOETYPE[merged.shoeType] ?? [];
+
+        merged.services = (merged.services ?? []).filter((id) => allowedServices.includes(id));
+        merged.upgrades = (merged.upgrades ?? []).filter((id) => allowedUpgrades.includes(id));
+    }
+
     inMemoryState = merged;
     writeStorage(merged);
     return merged;
@@ -80,4 +109,3 @@ export function resetFunnelState() {
     writeStorage(inMemoryState);
     return inMemoryState;
 }
-

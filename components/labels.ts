@@ -1,30 +1,34 @@
 import type { ShoeType } from "@/components/funnelStore";
+import type { ServiceId } from "@/components/servicesCatalog";
+import type { UpsellId } from "@/components/upsellsCatalog";
 
-export function shoeTypeLabel(t?: ShoeType) {
-    if (t === "trainers") return "Trainers";
-    if (t === "heels") return "Luxury Heels";
-    if (t === "other") return "Boots / UGGs / Other";
-    return "Not set";
+export function shoeTypeLabel(shoeType?: ShoeType | string | null) {
+    switch (shoeType) {
+        case "trainers":
+            return "Trainers & Sneakers";
+        case "heels":
+            return "Luxury Heels";
+        case "other":
+            return "Boots / UGGs / Other";
+        case "kids":
+            return "Kids Shoes";
+        case "caps":
+            return "Caps";
+        default:
+            return "—";
+    }
 }
 
 export const SERVICE_LABELS: Record<string, string> = {
-    deep_clean: "Deep clean",
-    colour_restore: "Colour restoration",
-    sole_repaint: "Sole repaint",
-    heel_repair: "Heel repair",
-    stitch_repair: "Stitch repair",
-    suede_renewal: "Suede renewal",
-    odour_treatment: "Odour treatment",
-    fabric_refresh: "Fabric refresh",
-    lace_replacement: "Lace replacement",
-    unsure: "Unsure (we’ll assess)",
+    louboutin_sole_refresh: "Louboutin Sole Refresh (Standard Red)",
+    deoxidisation: "De-oxidisation",
+    new_laces: "New laces",
 };
 
 export const UPSELL_LABELS: Record<string, string> = {
-    protector_spray: "Protector Finish",
-    whitening: "Whitening Boost",
-    crease_guard: "Crease Care",
-    premium_finish: "Premium Finish",
-    odour_plus: "Odour+ Upgrade",
-    care_plan: "Freshstepper Care Plan (£25/month)",
+    shoe_trees: "Shoe trees",
+    stain_protect: "Stain protective spray",
+    express_priority: "Express priority service",
+    care_plan: "Freshstepper Care Plan (£25/mo)",
 };
+

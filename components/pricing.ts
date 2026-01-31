@@ -1,10 +1,14 @@
 import type { ShoeType } from "@/components/funnelStore";
 
+
 export const BASE_PRICES_GBP: Record<ShoeType, number> = {
-    trainers: 35,
-    heels: 45,
-    other: 40,
+    trainers: 40,
+    heels: 40,
+    other: 35,
+    kids: 25,
+    caps: 25,
 };
+
 
 export const SERVICE_PRICES_GBP: Record<string, number> = {
     deep_clean: 0,          // included in base for prototype
