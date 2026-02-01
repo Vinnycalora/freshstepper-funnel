@@ -4,6 +4,7 @@ import { upsertOrder } from "@/lib/orders";
 import { computeOneTimeTotal } from "@/lib/pricing";
 
 export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!);
 
@@ -12,15 +13,14 @@ type DeliveryMethod = "postal" | "dropoff";
 
 type Body = {
     shoeType?: ShoeType | string;
-    services?: string[]; // “needs add-ons” now
-    upgrades?: string[]; // upsells (may include "care_plan")
+    services?: string[];
+    upgrades?: string[];
     delivery?: DeliveryMethod | string;
 
     fullName?: string;
     email?: string;
     phone?: string;
 
-    // address fields (required for postal)
     addressLine1?: string;
     city?: string;
     postcode?: string;
@@ -36,7 +36,10 @@ export async function POST(req: Request) {
     try {
         const body = (await req.json()) as Body;
 
-        const origin = req.headers.get("origin") ?? process.env.NEXT_PUBLIC_SITE_URL ?? "http://localhost:3000";
+        const origin =
+            req.headers.get("origin") ??
+            process.env.NEXT_PUBLIC_SITE_URL ??
+            "http://localhost:3000";
 
         const shoeType = String(body.shoeType ?? "other");
         const services = Array.isArray(body.services) ? body.services.filter(Boolean) : [];
@@ -69,13 +72,8 @@ export async function POST(req: Request) {
         const hasCarePlan = upgrades.includes("care_plan");
         const carePlanPriceId = process.env.STRIPE_CARE_PLAN_PRICE_ID;
 
-        // ✅ IMPORTANT: exclude care_plan from one-time pricing (but keep it for subscription)
-        const upgradesForOneTime = upgrades.filter((u) => u !== "care_plan");
+        const oneTimeTotal = computeOneTimeTotal(shoeType, services, upgrades) ?? 0;
 
-        // Totals: compute one-off total using shared pricing helper
-        const oneTimeTotal = computeOneTimeTotal(shoeType, services, upgradesForOneTime) ?? 0;
-
-        // Single bundled one-off line item (keeps Stripe simple + preserves abandoned URL behaviour)
         const oneTimeLineItems: Stripe.Checkout.SessionCreateParams.LineItem[] =
             oneTimeTotal > 0
                 ? [
@@ -84,7 +82,9 @@ export async function POST(req: Request) {
                             currency: "gbp",
                             product_data: {
                                 name: "Freshstepper Service",
-                                description: `Type: ${shoeType} • Add-ons: ${services.join(", ") || "none"} • Upgrades: ${upgradesForOneTime.join(", ") || "none"}`,
+                                description: `Type: ${shoeType} • Add-ons: ${services.join(", ") || "none"} • Upgrades: ${upgrades
+                                    .filter((u) => u !== "care_plan")
+                                    .join(", ") || "none"}`,
                             },
                             unit_amount: oneTimeTotal,
                         },
@@ -106,7 +106,6 @@ export async function POST(req: Request) {
             phone,
             preferredDateTime,
 
-            // Sendcloud-required address fields (even if dropoff, keep stable keys)
             addressLine1: addressLine1 || "",
             city: city || "",
             postcode: postcode || "",
@@ -129,10 +128,7 @@ export async function POST(req: Request) {
                 success_url,
                 cancel_url,
                 metadata,
-                line_items: [
-                    { price: carePlanPriceId, quantity: 1 },
-                    ...oneTimeLineItems, // one-time add-ons alongside subscription
-                ],
+                line_items: [{ price: carePlanPriceId, quantity: 1 }, ...oneTimeLineItems],
             });
         } else {
             session = await stripe.checkout.sessions.create({
@@ -145,7 +141,7 @@ export async function POST(req: Request) {
             });
         }
 
-        // Save unpaid order at checkout start (for abandoned checker)
+        // ✅ IMPORTANT: await DB write (Postgres)
         await upsertOrder({
             id: session.id,
             createdAt: new Date().toISOString(),
@@ -179,6 +175,7 @@ export async function POST(req: Request) {
         return NextResponse.json({ error: msg }, { status: 500 });
     }
 }
+
 
 
 
