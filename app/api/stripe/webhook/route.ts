@@ -54,7 +54,7 @@ export async function POST(req: Request) {
                 const email = session.customer_details?.email ?? session.customer_email ?? null;
 
                 // ✅ Standardised base order (canonical fields + legacy aliases)
-                const savedOrder = upsertOrder({
+                const savedOrder = await upsertOrder({
                     id: session.id,
                     createdAt: new Date().toISOString(),
 
@@ -106,7 +106,6 @@ export async function POST(req: Request) {
 
                     const phone = session.customer_details?.phone ?? session.metadata?.phone ?? null;
 
-
                     const addressLine1 = session.metadata?.addressLine1 ?? "";
                     const city = session.metadata?.city ?? "";
                     const postcode = session.metadata?.postcode ?? "";
@@ -136,7 +135,7 @@ export async function POST(req: Request) {
                     const parcel = parcelResp?.parcel;
 
                     // ✅ Sendcloud update + history-safe merge
-                    const existing = getOrderById(session.id);
+                    const existing = await getOrderById(session.id);
                     const next = applySendcloudStatusUpdate(existing ?? { id: session.id }, {
                         parcelId: parcel?.id ?? null,
                         trackingNumber: parcel?.tracking_number ?? null,
@@ -144,7 +143,7 @@ export async function POST(req: Request) {
                         status: parcel?.status ?? null,
                     });
 
-                    upsertOrder(next);
+                    await upsertOrder(next);
 
                     console.log("✅ Sendcloud parcel created:", parcel?.id);
                 }
@@ -163,5 +162,6 @@ export async function POST(req: Request) {
 
     return NextResponse.json({ received: true });
 }
+
 
 

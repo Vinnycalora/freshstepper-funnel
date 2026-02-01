@@ -2,8 +2,8 @@
 import { listOrders } from "@/lib/orders";
 import AdminOrdersClient from "./AdminOrdersClient";
 
-export default function AdminOrdersPage() {
-    const orders = listOrders()
+export default async function AdminOrdersPage() {
+    const orders = (await listOrders())
         .slice()
         .sort((a, b) => (b.createdAt || "").localeCompare(a.createdAt || ""));
 
@@ -20,6 +20,7 @@ export default function AdminOrdersPage() {
         </main>
     );
 }
+
 
 
 

@@ -14,12 +14,12 @@ export async function POST(req: Request) {
             return NextResponse.json({ error: "Missing orderId" }, { status: 400 });
         }
 
-        const existing = getOrderById(orderId);
+        const existing = await getOrderById(orderId);
         if (!existing) {
             return NextResponse.json({ error: "Order not found" }, { status: 404 });
         }
 
-        const parcelId = Number(existing.shippingLabelId);
+        const parcelId = Number(existing?.shippingLabelId);
         if (!parcelId) {
             return NextResponse.json({ error: "No Sendcloud parcel id for this order" }, { status: 400 });
         }

@@ -10,12 +10,14 @@
   },
   "dependencies": {
     "next": "^14.2.18",
+    "pg": "^8.18.0",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
     "stripe": "^20.0.0"
   },
   "devDependencies": {
     "@types/node": "^20",
+    "@types/pg": "^8.16.0",
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "autoprefixer": "^10.4.22",

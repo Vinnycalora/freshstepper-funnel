@@ -114,7 +114,7 @@ export async function POST(req: Request) {
         const stage3Min = clampInt(body?.stage3Min ?? def.stage3Min, def.stage3Min, 0, 60 * 24 * 30);
         const maxPerRun = clampInt(body?.maxPerRun ?? def.maxPerRun, def.maxPerRun, 1, 200);
 
-        const orders = listOrders();
+        const orders = await listOrders();
 
         // Eligible base set: unpaid + recovery link + contact
         const candidates = orders
@@ -142,7 +142,7 @@ export async function POST(req: Request) {
             if (nextStage === 3) log = buildStage3(o);
 
             const abandonedFirstAt = o?.abandonedFirstAt ?? nowIso;
-            const updated = upsertOrder({
+            const updated = await upsertOrder({
                 ...o,
                 abandonedStage: nextStage,
                 abandonedFirstAt,
@@ -178,4 +178,5 @@ export async function POST(req: Request) {
         );
     }
 }
+
 

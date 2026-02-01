@@ -1,17 +1,19 @@
+// lib/orders.ts
 import fs from "fs";
 import path from "path";
+import { getPool } from "@/lib/db";
 
 export type StatusHistoryEntry = { status: string; at: string };
 
 export type StoredOrder = {
-    id: string;               // Stripe checkout session id (stable key)
-    shortRef?: string;        // FS-YYYYMMDD-001
+    id: string; // Stripe checkout session id (stable key)
+    shortRef?: string; // FS-YYYYMMDD-001
 
     createdAt?: string;
 
     // Canonical customer
     customerEmail?: string | null;
-    email?: string | null;    // legacy alias (kept in sync)
+    email?: string | null; // legacy alias (kept in sync)
     name?: string | null;
     phone?: string | null;
 
@@ -44,18 +46,33 @@ export type StoredOrder = {
     sendcloudStatusUpdatedAt?: string | null;
     sendcloudStatusHistory?: StatusHistoryEntry[];
 
-    checkoutUrl?: string | null;          // Stripe session.url recovery link
-    abandonedStage?: number | null;       // 0/1/2/3 etc.
-    abandonedFirstAt?: string | null;     // when we first triggered stage 1
-    abandonedLastAt?: string | null;      // last time we attempted
-
+    checkoutUrl?: string | null; // Stripe session.url recovery link
+    abandonedStage?: number | null;
+    abandonedFirstAt?: string | null;
+    abandonedLastAt?: string | null;
 
     [key: string]: any;
 };
 
 const ORDERS_PATH = path.join(process.cwd(), "data", "orders.json");
 
-function readOrders(): StoredOrder[] {
+/**
+ * Storage driver:
+ * - set STORAGE_DRIVER=postgres on Vercel/Railway (recommended)
+ * - keep STORAGE_DRIVER=json for local fallback
+ *
+ * If not specified, auto-enable Postgres when DATABASE_URL exists.
+ */
+function usePostgres(): boolean {
+    const driver = String(process.env.STORAGE_DRIVER ?? "").toLowerCase();
+    if (driver === "postgres") return true;
+    if (driver === "json") return false;
+    return !!process.env.DATABASE_URL;
+}
+
+/* ----------------------- JSON STORAGE (fallback) ----------------------- */
+
+function readOrdersJson(): StoredOrder[] {
     try {
         const raw = fs.readFileSync(ORDERS_PATH, "utf8");
         const parsed = JSON.parse(raw);
@@ -65,21 +82,27 @@ function readOrders(): StoredOrder[] {
     }
 }
 
-function writeOrders(orders: StoredOrder[]) {
+function writeOrdersJson(orders: StoredOrder[]) {
     fs.mkdirSync(path.dirname(ORDERS_PATH), { recursive: true });
     fs.writeFileSync(ORDERS_PATH, JSON.stringify(orders, null, 2), "utf8");
 }
 
+/* ----------------------- HELPERS ----------------------- */
+
 function ensureStringArray(v: any): string[] {
     if (!v) return [];
     if (Array.isArray(v)) return v.map(String).filter(Boolean);
+
     if (typeof v === "string") {
         try {
             const parsed = JSON.parse(v);
             if (Array.isArray(parsed)) return parsed.map(String).filter(Boolean);
-        } catch { }
+        } catch {
+            // fall through
+        }
         return v.split(",").map((s) => s.trim()).filter(Boolean);
     }
+
     return [];
 }
 
@@ -87,19 +110,21 @@ function toStatusString(value: any): string | null {
     if (value == null) return null;
     if (typeof value === "string") return value;
     if (typeof value === "object") {
-        return value.message ?? JSON.stringify(value);
+        return (value as any).message ?? JSON.stringify(value);
     }
     return String(value);
 }
 
-function generateShortRef(existing: StoredOrder[]): string {
+function todayPrefix(): string {
     const d = new Date();
     const y = String(d.getFullYear());
     const m = String(d.getMonth() + 1).padStart(2, "0");
     const day = String(d.getDate()).padStart(2, "0");
-    const date = `${y}${m}${day}`;
+    return `FS-${y}${m}${day}-`;
+}
 
-    const prefix = `FS-${date}-`;
+function generateShortRefFromExisting(existing: StoredOrder[]): string {
+    const prefix = todayPrefix();
     let max = 0;
 
     for (const o of existing) {
@@ -112,16 +137,46 @@ function generateShortRef(existing: StoredOrder[]): string {
     return `${prefix}${String(max + 1).padStart(3, "0")}`;
 }
 
+async function generateShortRefPostgres(): Promise<string> {
+    const pool = getPool();
+    if (!pool) throw new Error("DATABASE_URL is not set");
+
+    const prefix = todayPrefix();
+    const like = `${prefix}%`;
+
+    const res = await pool.query(
+        `select data->>'shortRef' as shortref
+         from orders
+         where data->>'shortRef' like $1
+         order by data->>'shortRef' desc
+         limit 1`,
+        [like]
+    );
+
+    const last = res.rows?.[0]?.shortref as string | undefined;
+    if (!last || typeof last !== "string" || !last.startsWith(prefix)) {
+        return `${prefix}001`;
+    }
+
+    const n = Number(last.slice(prefix.length));
+    const next = Number.isFinite(n) ? n + 1 : 1;
+    return `${prefix}${String(next).padStart(3, "0")}`;
+}
+
 /**
  * Normalise + canonicalise an order merge.
- * This is the key to “standardisation”.
+ * Protects: createdAt, shortRef, history, aliases.
  */
-function normaliseMergedOrder(merged: StoredOrder, existing?: StoredOrder | null): StoredOrder {
+function normaliseMergedOrder(
+    merged: StoredOrder,
+    existing?: StoredOrder | null,
+    shortRefHint?: string
+): StoredOrder {
     // createdAt only set once
     if (!merged.createdAt) merged.createdAt = existing?.createdAt ?? new Date().toISOString();
 
     // shortRef only set once
-    if (!merged.shortRef) merged.shortRef = existing?.shortRef ?? generateShortRef(readOrders());
+    if (!merged.shortRef) merged.shortRef = existing?.shortRef ?? shortRefHint;
 
     // email alias sync
     if (!merged.customerEmail && merged.email) merged.customerEmail = merged.email;
@@ -148,17 +203,110 @@ function normaliseMergedOrder(merged: StoredOrder, existing?: StoredOrder | null
     return merged;
 }
 
+/* ----------------------- PUBLIC API ----------------------- */
 
 export function isPaid(order: any): boolean {
     const s = String(order?.paymentStatus ?? "").toLowerCase();
     return s === "paid";
 }
 
-export function listAbandonedCandidates(opts?: { minutes?: number }) {
+export async function listOrders(): Promise<StoredOrder[]> {
+    if (!usePostgres()) {
+        return readOrdersJson();
+    }
+
+    const pool = getPool();
+    if (!pool) throw new Error("DATABASE_URL is not set");
+
+    const res = await pool.query(
+        `select data
+         from orders
+         order by created_at desc`
+    );
+
+    const out: StoredOrder[] = [];
+    for (const row of res.rows ?? []) {
+        const data = row?.data;
+        if (data && typeof data === "object") out.push(data as StoredOrder);
+    }
+    return out;
+}
+
+export async function getOrderById(id: string): Promise<StoredOrder | null> {
+    if (!usePostgres()) {
+        return readOrdersJson().find((o) => o.id === id) ?? null;
+    }
+
+    const pool = getPool();
+    if (!pool) throw new Error("DATABASE_URL is not set");
+
+    const res = await pool.query(`select data from orders where id = $1 limit 1`, [id]);
+    const data = res.rows?.[0]?.data;
+    return data ? (data as StoredOrder) : null;
+}
+
+/**
+ * Upsert order (only id required). Returns saved order.
+ * Protects: shortRef, createdAt, history.
+ */
+export async function upsertOrder(update: Partial<StoredOrder> & { id: string }): Promise<StoredOrder> {
+    if (!usePostgres()) {
+        const orders = readOrdersJson();
+        const idx = orders.findIndex((o) => o.id === update.id);
+        const existing = idx >= 0 ? orders[idx] : null;
+
+        const shortRefHint = existing?.shortRef ?? generateShortRefFromExisting(orders);
+
+        const merged: StoredOrder = normaliseMergedOrder(
+            { ...(existing ?? { id: update.id }), ...update },
+            existing,
+            shortRefHint
+        );
+
+        if (idx >= 0) orders[idx] = merged;
+        else orders.unshift(merged);
+
+        writeOrdersJson(orders);
+        return merged;
+    }
+
+    const pool = getPool();
+    if (!pool) throw new Error("DATABASE_URL is not set");
+
+    const existing = await getOrderById(update.id);
+
+    // only generate shortRef if we need it
+    const shortRefHint =
+        existing?.shortRef ??
+        (update.shortRef ? undefined : await generateShortRefPostgres());
+
+    const merged: StoredOrder = normaliseMergedOrder(
+        { ...(existing ?? { id: update.id }), ...update },
+        existing,
+        shortRefHint
+    );
+
+    merged.id = update.id;
+
+    await pool.query(
+        `insert into orders (id, data)
+         values ($1, $2::jsonb)
+         on conflict (id) do update
+           set data = excluded.data,
+               updated_at = now()`,
+        [update.id, JSON.stringify(merged)]
+    );
+
+    return merged;
+}
+
+export async function listAbandonedCandidates(opts?: { minutes?: number }) {
     const minutes = opts?.minutes ?? 10;
     const cutoff = Date.now() - minutes * 60 * 1000;
 
-    return listOrders().filter((o: any) => {
+    const orders = await listOrders();
+
+    return orders.filter((o: any) => {
         if (isPaid(o)) return false;
 
         // must have recovery link to be useful
@@ -182,7 +330,7 @@ export function listAbandonedCandidates(opts?: { minutes?: number }) {
     });
 }
 
-export function markAbandonedStage(orderId: string, stage: number) {
+export async function markAbandonedStage(orderId: string, stage: number) {
     const now = new Date().toISOString();
     return upsertOrder({
         id: orderId,
@@ -190,35 +338,6 @@ export function markAbandonedStage(orderId: string, stage: number) {
         abandonedFirstAt: stage === 1 ? now : undefined,
         abandonedLastAt: now,
     } as any);
-}
-
-/**
- * Upsert order (only id required). Returns saved order.
- * Protects: shortRef, createdAt, history.
- */
-export function upsertOrder(update: Partial<StoredOrder> & { id: string }): StoredOrder {
-    const orders = readOrders();
-    const idx = orders.findIndex((o) => o.id === update.id);
-    const existing = idx >= 0 ? orders[idx] : null;
-
-    const merged: StoredOrder = normaliseMergedOrder(
-        { ...(existing ?? { id: update.id }), ...update },
-        existing
-    );
-
-    if (idx >= 0) orders[idx] = merged;
-    else orders.unshift(merged);
-
-    writeOrders(orders);
-    return merged;
-}
-
-export function listOrders(): StoredOrder[] {
-    return readOrders();
-}
-
-export function getOrderById(id: string) {
-    return readOrders().find((o) => o.id === id) ?? null;
 }
 
 /**
@@ -261,4 +380,6 @@ export function applySendcloudStatusUpdate(
 
     return next;
 }
+
+
 

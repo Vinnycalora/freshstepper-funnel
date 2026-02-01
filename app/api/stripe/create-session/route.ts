@@ -12,7 +12,7 @@ type DeliveryMethod = "postal" | "dropoff";
 
 type Body = {
     shoeType?: ShoeType | string;
-    services?: string[]; // “needs add-ons” now!
+    services?: string[]; // “needs add-ons” now
     upgrades?: string[]; // upsells (may include "care_plan")
     delivery?: DeliveryMethod | string;
 
@@ -69,10 +69,11 @@ export async function POST(req: Request) {
         const hasCarePlan = upgrades.includes("care_plan");
         const carePlanPriceId = process.env.STRIPE_CARE_PLAN_PRICE_ID;
 
-        // Totals: compute one-off total using shared pricing helper!
+        // ✅ IMPORTANT: exclude care_plan from one-time pricing (but keep it for subscription)
         const upgradesForOneTime = upgrades.filter((u) => u !== "care_plan");
-        const oneTimeTotal = computeOneTimeTotal(shoeType, services, upgradesForOneTime) ?? 0;
 
+        // Totals: compute one-off total using shared pricing helper
+        const oneTimeTotal = computeOneTimeTotal(shoeType, services, upgradesForOneTime) ?? 0;
 
         // Single bundled one-off line item (keeps Stripe simple + preserves abandoned URL behaviour)
         const oneTimeLineItems: Stripe.Checkout.SessionCreateParams.LineItem[] =
@@ -83,7 +84,7 @@ export async function POST(req: Request) {
                             currency: "gbp",
                             product_data: {
                                 name: "Freshstepper Service",
-                                description: `Type: ${shoeType} • Add-ons: ${services.join(", ") || "none"} • Upgrades: ${upgrades.filter((u) => u !== "care_plan").join(", ") || "none"}`,
+                                description: `Type: ${shoeType} • Add-ons: ${services.join(", ") || "none"} • Upgrades: ${upgradesForOneTime.join(", ") || "none"}`,
                             },
                             unit_amount: oneTimeTotal,
                         },
@@ -130,7 +131,7 @@ export async function POST(req: Request) {
                 metadata,
                 line_items: [
                     { price: carePlanPriceId, quantity: 1 },
-                    ...oneTimeLineItems, // optional one-time add-ons alongside subscription
+                    ...oneTimeLineItems, // one-time add-ons alongside subscription
                 ],
             });
         } else {
@@ -145,7 +146,7 @@ export async function POST(req: Request) {
         }
 
         // Save unpaid order at checkout start (for abandoned checker)
-        upsertOrder({
+        await upsertOrder({
             id: session.id,
             createdAt: new Date().toISOString(),
             email,
@@ -178,5 +179,6 @@ export async function POST(req: Request) {
         return NextResponse.json({ error: msg }, { status: 500 });
     }
 }
+
 
 

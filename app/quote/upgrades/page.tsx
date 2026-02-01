@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Container } from "@/components/Container";
 import { Progress } from "@/components/Progress";
@@ -60,21 +60,34 @@ function ToggleCard({
 export default function QuoteUpgradesPage() {
     const router = useRouter();
 
-    const s = useMemo(() => getFunnelState(), []);
-    const shoeType = s.shoeType as ShoeType | undefined;
+    // IMPORTANT:
+    // - During `next build`, this component is pre-rendered on the server.
+    // - Browser APIs like localStorage/location/window don't exist there.
+    // - So we ONLY read funnel state inside useEffect (client-only).
+    const [shoeType, setShoeType] = useState<ShoeType | undefined>(undefined);
+    const [selected, setSelected] = useState<UpsellId[]>([]);
+    const [noThanks, setNoThanks] = useState<boolean>(false);
+    const [hydrated, setHydrated] = useState(false);
 
-    // Guard rails: if steps are skipped
-    if (!shoeType) {
-        router.push("/quote/type");
-    }
+    useEffect(() => {
+        const s = getFunnelState();
+        const st = (s.shoeType as ShoeType | undefined) ?? undefined;
+
+        setShoeType(st);
+        setSelected(((s.upgrades ?? []) as UpsellId[]).filter(Boolean));
+        setHydrated(true);
+    }, []);
+
+    // Redirect only AFTER hydration (so we don't push during pre-render)
+    useEffect(() => {
+        if (!hydrated) return;
+        if (!shoeType) router.push("/quote/type");
+    }, [hydrated, shoeType, router]);
 
     const available: UpsellId[] = useMemo(() => {
         if (!shoeType) return [];
         return UPSELLS_BY_SHOETYPE[shoeType] ?? [];
     }, [shoeType]);
-
-    const [selected, setSelected] = useState<UpsellId[]>(() => (s.upgrades ?? []) as UpsellId[]);
-    const [noThanks, setNoThanks] = useState<boolean>(false);
 
     function toggle(id: UpsellId) {
         setNoThanks(false);
@@ -95,13 +108,28 @@ export default function QuoteUpgradesPage() {
     const backHref =
         shoeType === "caps" || shoeType === "kids" || shoeType === "other" ? "/quote/type" : "/quote/services";
 
+    // While we’re hydrating, render a minimal shell (prevents flicker + avoids bad redirects)
+    if (!hydrated) {
+        return (
+            <main className="min-h-screen py-12">
+                <Container>
+                    <Progress step={3} />
+                    <h1 className="text-3xl font-extrabold uppercase sm:text-4xl">Recommended upgrades</h1>
+                    <p className="mt-3 text-black/70">Loading…</p>
+                </Container>
+            </main>
+        );
+    }
+
     return (
         <main className="min-h-screen py-12">
             <Container>
                 <Progress step={3} />
 
                 <h1 className="text-3xl font-extrabold uppercase sm:text-4xl">Recommended upgrades</h1>
-                <p className="mt-3 text-black/70">Most customers also add one of these for a better finish and longer-lasting results.</p>
+                <p className="mt-3 text-black/70">
+                    Most customers also add one of these for a better finish and longer-lasting results.
+                </p>
 
                 <div className="mt-8 grid gap-4">
                     {/* Shoe-type upgrades */}
@@ -136,7 +164,9 @@ export default function QuoteUpgradesPage() {
                                 onClick={() => toggle("care_plan")}
                                 className={[
                                     "rounded-lg px-4 py-2 font-semibold transition",
-                                    selected.includes("care_plan") ? "bg-[#1DB954] text-white" : "border border-black/20 bg-white hover:bg-black/5",
+                                    selected.includes("care_plan")
+                                        ? "bg-[#1DB954] text-white"
+                                        : "border border-black/20 bg-white hover:bg-black/5",
                                 ].join(" ")}
                             >
                                 {selected.includes("care_plan") ? "Added" : "Add"}
@@ -176,4 +206,5 @@ export default function QuoteUpgradesPage() {
         </main>
     );
 }
+
 
