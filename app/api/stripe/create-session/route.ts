@@ -72,7 +72,9 @@ export async function POST(req: Request) {
         const hasCarePlan = upgrades.includes("care_plan");
         const carePlanPriceId = process.env.STRIPE_CARE_PLAN_PRICE_ID;
 
-        const oneTimeTotal = computeOneTimeTotal(shoeType, services, upgrades) ?? 0;
+        const upgradesNoCarePlan = upgrades.filter((u) => u !== "care_plan");
+        const oneTimeTotal = computeOneTimeTotal(shoeType, services, upgradesNoCarePlan) ?? 0;
+
 
         const oneTimeLineItems: Stripe.Checkout.SessionCreateParams.LineItem[] =
             oneTimeTotal > 0
